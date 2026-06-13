@@ -1,0 +1,428 @@
+// =============================================================================
+//  Import ERP — схема базы данных
+// =============================================================================
+//
+//  Фаза 1: Users + Roles
+//  Фаза 2: Clients, Factories, Products (с фото/размерами/вариантами),
+//          Orders + OrderItems + OrderHistory,
+//          Documents + DocumentVersions (версионирование, без перезаписи)
+//
+//  Принципы:
+//    - Деньги храним в Decimal(18, 4) — никогда в Float
+//    - История неизменяема (append-only там, где это важно)
+//    - DocumentVersion — append-only, файлы никогда не перезаписываются
+//    - OrderHistory — полный аудит изменений заказа
+//    - Курсы валют, шаблоны — версионируются (Фаза 6+)
+//
+// =============================================================================
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// -----------------------------------------------------------------------------
+//  Пользователи и роли (Фаза 1)
+// -----------------------------------------------------------------------------
+
+enum UserRole {
+  ADMIN
+  MANAGER
+  ACCOUNTANT
+  LOGISTICS
+  VIEWER
+}
+
+model User {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  passwordHash String   @map("password_hash")
+  fullName     String   @map("full_name")
+  role         UserRole @default(VIEWER)
+  isActive     Boolean  @default(true) @map("is_active")
+
+  createdAt   DateTime  @default(now()) @map("created_at")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
+  lastLoginAt DateTime? @map("last_login_at")
+
+  // Связи Фазы 2
+  createdOrders     Order[]           @relation("OrderCreatedBy")
+  orderHistory      OrderHistory[]    @relation("OrderHistoryChangedBy")
+  createdDocuments  Document[]        @relation("DocumentCreatedBy")
+  uploadedVersions  DocumentVersion[] @relation("DocumentVersionUploadedBy")
+
+  @@index([email])
+  @@index([isActive])
+  @@map("users")
+}
+
+// -----------------------------------------------------------------------------
+//  Клиенты (Покупатели / Импортёры)
+// -----------------------------------------------------------------------------
+
+model Client {
+  id           String  @id @default(cuid())
+  companyName  String  @map("company_name")
+  inn          String?
+  ogrnip       String?
+  legalAddress String? @map("legal_address")
+  email        String?
+  phone        String?
+  comment      String?
+
+  banks    ClientBank[]
+  orders   Order[]
+  products Product[]
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("clients")
+  @@index([companyName])
+}
+
+// Реквизиты банковских счетов клиента (1 → N)
+model ClientBank {
+  id                   String @id @default(cuid())
+  clientId             String @map("client_id")
+  client               Client @relation(fields: [clientId], references: [id], onDelete: Cascade)
+
+  bankName             String @map("bank_name")             // Наименование банка
+  bic                  String                                // БИК
+  accountNumber        String @map("account_number")        // р/с
+  correspondentAccount String @map("correspondent_account") // к/с
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@map("client_banks")
+  @@index([clientId])
+}
+
+// -----------------------------------------------------------------------------
+//  Фабрики / Поставщики
+// -----------------------------------------------------------------------------
+
+model Factory {
+  id               String  @id @default(cuid())
+  name             String
+  contractCurrency String  @map("contract_currency") // USD/EUR/CNY/RUB/KGS
+  inn              String?
+  legalAddress     String? @map("legal_address")
+  actualAddress    String? @map("actual_address")
+  email            String?
+  phone            String?
+  paymentTerms     String? @map("payment_terms")
+  comments         String?
+
+  banks    FactoryBankAccount[]
+  products Product[]
+  orders   Order[]
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("factories")
+  @@index([name])
+}
+
+// Реквизиты банковских счетов фабрики (1 → N)
+model FactoryBankAccount {
+  id                   String  @id @default(cuid())
+  factoryId            String  @map("factory_id")
+  factory              Factory @relation(fields: [factoryId], references: [id], onDelete: Cascade)
+
+  bankName             String  @map("bank_name")
+  bic                  String
+  accountNumber        String  @map("account_number")        // р/с
+  correspondentAccount String  @map("correspondent_account") // к/с
+  correspondentBank    String? @map("correspondent_bank")    // банк-корреспондент
+  bankInn              String? @map("bank_inn")
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@map("factory_bank_accounts")
+  @@index([factoryId])
+}
+
+// -----------------------------------------------------------------------------
+//  Товары / Артикулы
+// -----------------------------------------------------------------------------
+
+enum ProductType {
+  SEWING   // Швейные изделия
+  KNITWEAR // Трикотаж
+}
+
+model Product {
+  id          String      @id @default(cuid())
+  factoryId   String      @map("factory_id")
+  factory     Factory     @relation(fields: [factoryId], references: [id])
+  clientId    String?     @map("client_id")
+  client      Client?     @relation(fields: [clientId], references: [id])
+
+  name        String
+  sku         String      @unique
+  type        ProductType
+  color       String?
+  composition String?     // Например: "95% хлопок, 5% эластан"
+  hsCode      String?     @map("hs_code") // ТН ВЭД
+
+  // Сертификат соответствия (один файл на товар)
+  certificateStorageKey String? @map("certificate_storage_key")
+  certificateFileName   String? @map("certificate_file_name")
+  certificateMimeType   String? @map("certificate_mime_type")
+  certificateSizeBytes  Int?    @map("certificate_size_bytes")
+
+  comment String?
+
+  photos     ProductPhoto[]
+  sizes      ProductSize[]
+  variants   ProductVariant[]
+  orderItems OrderItem[]
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("products")
+  @@index([sku])
+  @@index([factoryId])
+}
+
+// Фотографии товара (несколько на товар)
+model ProductPhoto {
+  id         String  @id @default(cuid())
+  productId  String  @map("product_id")
+  product    Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  storageKey String  @map("storage_key")
+  fileName   String  @map("file_name")
+  mimeType   String  @map("mime_type")
+  sizeBytes  Int     @map("size_bytes")
+  sortOrder  Int     @default(0) @map("sort_order")
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@map("product_photos")
+  @@index([productId])
+}
+
+// Размеры товара (XS/S/M/L/XL/42/44, со снятыми мерками)
+model ProductSize {
+  id           String  @id @default(cuid())
+  productId    String  @map("product_id")
+  product      Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  sizeCode     String  @map("size_code")
+  // measurements: { chest?: number, length?: number, sleeve?: number, waist?: number, hips?: number }
+  measurements Json    @default("{}")
+  sortOrder    Int     @default(0) @map("sort_order")
+
+  variants ProductVariant[]
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@map("product_sizes")
+  @@unique([productId, sizeCode])
+  @@index([productId])
+}
+
+// Варианты товара (размер + цвет)
+model ProductVariant {
+  id        String       @id @default(cuid())
+  productId String       @map("product_id")
+  product   Product      @relation(fields: [productId], references: [id], onDelete: Cascade)
+  sizeId    String?      @map("size_id")
+  size      ProductSize? @relation(fields: [sizeId], references: [id])
+
+  color   String?
+  sku     String?   @unique
+  barcode String?
+
+  orderItems OrderItem[]
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@map("product_variants")
+  @@index([productId])
+}
+
+// -----------------------------------------------------------------------------
+//  Заказы
+// -----------------------------------------------------------------------------
+
+// Статус заказа — мягкий enum (строка), чтобы можно было расширять без миграций.
+// Допустимые значения см. в src/modules/orders/statuses.ts
+model Order {
+  id          String @id @default(cuid())
+  orderNumber String @unique @map("order_number")
+
+  factoryId String  @map("factory_id")
+  factory   Factory @relation(fields: [factoryId], references: [id])
+  clientId  String  @map("client_id")
+  client    Client  @relation(fields: [clientId], references: [id])
+
+  orderDate DateTime @map("order_date")
+  name      String?  // Опциональное название заказа
+
+  totalSomAmount Decimal @default(0) @db.Decimal(18, 4) @map("total_som_amount") // сумма в сом (KGS)
+  totalRubAmount Decimal @default(0) @db.Decimal(18, 4) @map("total_rub_amount") // сумма в руб (RUB)
+
+  // Кэшбэк — независимый snapshot на заказ (не привязан к фабрике)
+  cashbackPercent  Decimal? @db.Decimal(8, 4) @map("cashback_percent")
+  cashbackAmount   Decimal? @db.Decimal(18, 4) @map("cashback_amount")
+  cashbackCurrency String?  @map("cashback_currency")
+
+  status   String  @default("DRAFT")
+  comments String?
+
+  createdById String? @map("created_by_id")
+  createdBy   User?   @relation("OrderCreatedBy", fields: [createdById], references: [id])
+
+  items     OrderItem[]
+  history   OrderHistory[]
+  documents Document[]
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("orders")
+  @@index([factoryId])
+  @@index([clientId])
+  @@index([status])
+  @@index([orderDate])
+}
+
+model OrderItem {
+  id        String  @id @default(cuid())
+  orderId   String  @map("order_id")
+  order     Order   @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  productId String  @map("product_id")
+  product   Product @relation(fields: [productId], references: [id])
+  variantId String? @map("variant_id")
+  variant   ProductVariant? @relation(fields: [variantId], references: [id])
+
+  sizeCode String? @map("size_code")
+  color    String?
+  quantity Int
+
+  priceSom    Decimal @db.Decimal(18, 4) @map("price_som")    // цена за единицу в сом
+  priceRub    Decimal @db.Decimal(18, 4) @map("price_rub")    // цена за единицу в руб
+  subtotalSom Decimal @db.Decimal(18, 4) @map("subtotal_som") // = priceSom * quantity
+  subtotalRub Decimal @db.Decimal(18, 4) @map("subtotal_rub") // = priceRub * quantity
+
+  sortOrder Int      @default(0) @map("sort_order")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@map("order_items")
+  @@index([orderId])
+  @@index([productId])
+}
+
+// Полная история изменений заказа (append-only)
+model OrderHistory {
+  id      String @id @default(cuid())
+  orderId String @map("order_id")
+  order   Order  @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  // STATUS_CHANGE / FIELD_CHANGE / ITEM_ADDED / ITEM_REMOVED / ITEM_UPDATED /
+  // DOCUMENT_ADDED / CASHBACK_CHANGE / CREATED
+  changeType  String  @map("change_type")
+  fieldName   String? @map("field_name")
+  oldValue    String? @map("old_value") // JSON-строка
+  newValue    String? @map("new_value") // JSON-строка
+  description String?
+
+  changedById String? @map("changed_by_id")
+  changedBy   User?   @relation("OrderHistoryChangedBy", fields: [changedById], references: [id])
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@map("order_history")
+  @@index([orderId])
+  @@index([createdAt])
+}
+
+// -----------------------------------------------------------------------------
+//  Документы (с версионированием — append-only)
+// -----------------------------------------------------------------------------
+
+// Типы документов — config-таблица, расширяется без кода
+model DocumentType {
+  id          String  @id @default(cuid())
+  code        String  @unique
+  name        String
+  // contract / specification / addendum / appendix / shipping
+  category    String
+  description String?
+  sortOrder   Int     @default(0) @map("sort_order")
+  isActive    Boolean @default(true) @map("is_active")
+
+  documents Document[]
+
+  @@map("document_types")
+}
+
+model Document {
+  id             String  @id @default(cuid())
+  documentNumber String? @map("document_number")
+  title          String
+  documentTypeId String  @map("document_type_id")
+  documentType   DocumentType @relation(fields: [documentTypeId], references: [id])
+
+  orderId String? @map("order_id")
+  order   Order?  @relation(fields: [orderId], references: [id])
+
+  currentVersionId String?          @unique @map("current_version_id")
+  currentVersion   DocumentVersion? @relation("CurrentVersion", fields: [currentVersionId], references: [id])
+
+  // ACTIVE / VOIDED / ARCHIVED — never DELETED
+  status   String @default("ACTIVE")
+  metadata Json   @default("{}")
+
+  createdById String? @map("created_by_id")
+  createdBy   User?   @relation("DocumentCreatedBy", fields: [createdById], references: [id])
+
+  versions DocumentVersion[] @relation("DocumentVersions")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("documents")
+  @@index([orderId])
+  @@index([documentTypeId])
+  @@index([status])
+}
+
+// Версии документов — НИКОГДА не удаляются и не перезаписываются.
+model DocumentVersion {
+  id         String   @id @default(cuid())
+  documentId String   @map("document_id")
+  document   Document @relation("DocumentVersions", fields: [documentId], references: [id], onDelete: Cascade)
+  version    Int
+
+  storageKey String  @map("storage_key")
+  fileName   String  @map("file_name")
+  mimeType   String  @map("mime_type")
+  sizeBytes  Int     @map("size_bytes")
+  checksum   String? // SHA-256
+
+  // Полный snapshot входных данных, если документ был сгенерирован (для воспроизводимости)
+  generationContext Json   @default("{}") @map("generation_context")
+  // UPLOAD / GENERATED
+  source            String @default("UPLOAD")
+
+  uploadedById String? @map("uploaded_by_id")
+  uploadedBy   User?   @relation("DocumentVersionUploadedBy", fields: [uploadedById], references: [id])
+
+  uploadedAt DateTime @default(now()) @map("uploaded_at")
+
+  currentForDocument Document? @relation("CurrentVersion")
+
+  @@map("document_versions")
+  @@unique([documentId, version])
+  @@index([documentId])
+}
