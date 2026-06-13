@@ -71,6 +71,44 @@ export const DOCUMENT_STATUS_LABELS: Record<string, string> = {
 export const COUNTRY_OF_ORIGIN = "Кыргызстан";
 
 /**
+ * Категории Word-шаблонов. Хранятся как строка, чтобы можно было
+ * добавлять новые без миграций.
+ */
+export const TEMPLATE_CATEGORY_LABELS: Record<string, string> = {
+  CONTRACT: "Договор",
+  SPECIFICATION: "Спецификация",
+  ADDENDUM: "Дополнительное соглашение",
+  APPENDIX: "Приложение",
+  INVOICE: "Счёт",
+  TN: "ТН",
+  TTH: "ТТН",
+  CMR: "CMR",
+  PACKING_LIST: "Упаковочный лист",
+  LABEL: "Вшивная бирка",
+  CUSTOM: "Пользовательский шаблон",
+};
+
+export const TEMPLATE_CATEGORIES = Object.keys(TEMPLATE_CATEGORY_LABELS);
+
+/**
+ * Соответствие категории шаблона коду типа документа (из DocumentType.code).
+ * Используется при сохранении сгенерированного документа в архив.
+ */
+export const TEMPLATE_CATEGORY_TO_DOC_TYPE: Record<string, string> = {
+  CONTRACT: "CONTRACT",
+  SPECIFICATION: "SPECIFICATION",
+  ADDENDUM: "ADDENDUM",
+  APPENDIX: "APPENDIX",
+  INVOICE: "INVOICE",
+  TN: "TN",
+  TTH: "TTH",
+  CMR: "CMR",
+  PACKING_LIST: "PACKING_LIST",
+  LABEL: "LABEL",
+  CUSTOM: "OTHER",
+};
+
+/**
  * Базовые символы по уходу за изделием.
  * Используются в этикетках. Будут отрендерены в PDF.
  */

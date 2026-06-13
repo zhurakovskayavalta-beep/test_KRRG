@@ -50,10 +50,12 @@ model User {
   lastLoginAt DateTime? @map("last_login_at")
 
   // Связи Фазы 2
-  createdOrders     Order[]           @relation("OrderCreatedBy")
-  orderHistory      OrderHistory[]    @relation("OrderHistoryChangedBy")
-  createdDocuments  Document[]        @relation("DocumentCreatedBy")
-  uploadedVersions  DocumentVersion[] @relation("DocumentVersionUploadedBy")
+  createdOrders            Order[]             @relation("OrderCreatedBy")
+  orderHistory             OrderHistory[]      @relation("OrderHistoryChangedBy")
+  createdDocuments         Document[]          @relation("DocumentCreatedBy")
+  uploadedVersions         DocumentVersion[]   @relation("DocumentVersionUploadedBy")
+  createdTemplates         Template[]          @relation("TemplateCreatedBy")
+  uploadedTemplateVersions TemplateVersion[]   @relation("TemplateVersionUploadedBy")
 
   @@index([email])
   @@index([isActive])
@@ -425,4 +427,67 @@ model DocumentVersion {
   @@map("document_versions")
   @@unique([documentId, version])
   @@index([documentId])
+}
+
+// -----------------------------------------------------------------------------
+//  Шаблоны Word-документов (Phase 2 stabilization)
+// -----------------------------------------------------------------------------
+//
+//  Шаблоны .docx с плейсхолдерами вида {{client.companyName}}, {{order.orderNumber}}.
+//  Категории — soft enum (строка), список ведётся в коде в `TEMPLATE_CATEGORY_LABELS`.
+//
+//  В каждой категории может быть несколько шаблонов, но активным —
+//  только один (флаг `isActive`). Активный используется по умолчанию при
+//  генерации документов нужного типа.
+//
+//  Версии — append-only. Загрузка нового файла = новая версия.
+//
+
+model Template {
+  id          String  @id @default(cuid())
+  code        String? @unique               // опциональный пользовательский код
+  name        String
+  category    String                          // CONTRACT/SPECIFICATION/ADDENDUM/APPENDIX/INVOICE/TN/TTH/CMR/PACKING_LIST/LABEL/CUSTOM
+  description String?
+  isActive    Boolean @default(false) @map("is_active")
+
+  currentVersionId String?           @unique @map("current_version_id")
+  currentVersion   TemplateVersion?  @relation("CurrentTemplateVersion", fields: [currentVersionId], references: [id])
+
+  createdById String? @map("created_by_id")
+  createdBy   User?   @relation("TemplateCreatedBy", fields: [createdById], references: [id])
+
+  versions TemplateVersion[] @relation("TemplateVersions")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("templates")
+  @@index([category])
+  @@index([isActive])
+}
+
+// Версии шаблонов — НИКОГДА не удаляются и не перезаписываются.
+model TemplateVersion {
+  id         String   @id @default(cuid())
+  templateId String   @map("template_id")
+  template   Template @relation("TemplateVersions", fields: [templateId], references: [id], onDelete: Cascade)
+  version    Int
+
+  storageKey String  @map("storage_key")
+  fileName   String  @map("file_name")
+  sizeBytes  Int     @map("size_bytes")
+  checksum   String?
+  notes      String?  // комментарий к версии (что изменилось)
+
+  uploadedById String? @map("uploaded_by_id")
+  uploadedBy   User?   @relation("TemplateVersionUploadedBy", fields: [uploadedById], references: [id])
+
+  uploadedAt DateTime @default(now()) @map("uploaded_at")
+
+  currentForTemplate Template? @relation("CurrentTemplateVersion")
+
+  @@map("template_versions")
+  @@unique([templateId, version])
+  @@index([templateId])
 }
